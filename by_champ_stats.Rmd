@@ -1,0 +1,127 @@
+```{r}
+library(anytime)
+library(tidyverse)
+library(ggplot2)
+library(broom)
+library(tidyr)
+library(modelr)
+library(purrr)
+library(dplyr)
+library(lubridate)
+library(furrr)
+library(tictoc)
+plan(multicore, workers = max(availableCores(constraints = "multicore")%/%2, 1))
+library(pracma)
+```
+
+Compute test statistic
+```{r}
+big_reality <- readRDS('data/big_reality_stats.rds')
+```
+
+```{r}
+reality <- big_reality %>% 
+  filter(hero_role == 'TOP', !is.na(hero_win)) 
+
+test_stat_by_champ_overall <- function(df){
+reality.res <- df %>% 
+  mutate(c_ob = ifelse(choice == observed, 1, 0)) 
+
+by_champ <- reality.res %>%
+  group_by(c_ob, observed) %>%
+  summarize(count = n()) %>%
+  spread(key=c_ob, value=count)
+
+if (!'1' %in% colnames(by_champ)){
+  print('no positives found')
+  by_champ <- by_champ %>% mutate('1' = 0)
+}
+if (!'0' %in% colnames(by_champ)){
+  print('no negatives found')
+  by_champ <- by_champ %>% mutate('0' = 0)
+}
+by_champ <- by_champ %>%
+  `colnames<-`(c("champ_name", "ch_other", "ch_obs")) %>%
+  mutate(ch_other = ifelse(is.na(ch_other), 0, ch_other),
+         ch_obs = ifelse(is.na(ch_obs), 0, ch_obs)) %>%
+  mutate(m_p = ch_obs/(ch_obs + ch_other)) 
+return(by_champ)
+}
+```
+
+Compute point estimates of test statistic by champ/skill
+```{r}
+l_s_by_champ <- test_stat_by_champ_overall(reality %>% filter(skill == 'low'))
+h_s_by_champ <- test_stat_by_champ_overall(reality %>% filter(skill == 'high'))
+```
+
+```{r}
+saveRDS(l_s_by_champ, 'data/ls_bc.rds')
+saveRDS(h_s_by_champ, 'data/hs_bc.rds')
+```
+
+Randomization inference
+```{r}
+winrates <- reality %>%
+  group_by(skill, observed, time_slice) %>%
+  summarize(hero_wins = sum(hero_win),
+            tot = n())  %>%
+  ungroup() %>%
+  mutate(pct_hero_win = hero_wins/tot)
+null_freqs <- reality %>% 
+  group_by(time_slice, observed, skill) %>%
+  summarize(count = n()) %>% 
+  ungroup() %>%
+  group_by(time_slice, skill) %>%
+  mutate(prop = count/sum(count)) %>%
+  ungroup()
+```
+
+```{r}
+full_null <- function(j){
+ no_obs_hw <- reality %>%
+    select(-hero_win) %>%
+    select(-observed)
+  fake_obs <- c()
+  #resample observed champions
+  for (i in 1:nrow(no_obs_hw)){
+  not_allowed <- c(no_obs_hw$champ[i], no_obs_hw$ban_1[i],no_obs_hw$ban_2[i],no_obs_hw$ban_3[i],no_obs_hw$ban_4[i],no_obs_hw$ban_5[i],no_obs_hw$ban_6[i],no_obs_hw$ban_7[i],no_obs_hw$ban_8[i],no_obs_hw$ban_9[i],no_obs_hw$ban_10[i])
+  not_allowed <- not_allowed[!is.na(not_allowed)]
+  this_time_slice <- no_obs_hw$time_slice[i]
+  this_skill_inner <- no_obs_hw$skill[i]
+  test <- null_freqs %>%
+    filter(time_slice == this_time_slice,
+           !observed %in% not_allowed,
+           skill == this_skill_inner) %>%
+    sample_n(1, weight=count, replace=T) %>%
+    pull(observed)
+  fake_obs <- c(fake_obs, test)
+  }
+  no_obs_hw$observed <- fake_obs
+  
+  #resample wins 
+  this_wr <- no_obs_hw %>%
+    left_join(winrates, by=c('skill', 'observed', 'time_slice')) %>%
+    select(-hero_wins, -tot)%>%
+    pull(pct_hero_win)
+  fake_hero_win <- future_map(this_wr, rbernoulli, n=1)
+  no_obs_hw$hero_win <- unlist(fake_hero_win)
+  no_obs_hw <- no_obs_hw %>% 
+    mutate(hero_win = ifelse(hero_win, 1, 0))
+  
+  # Compute test statistic
+  l_s_by_champ <- test_stat_by_champ_overall(no_obs_hw %>% filter(skill == 'low')) %>% mutate(skill = 'low')
+  h_s_by_champ <- test_stat_by_champ_overall(no_obs_hw %>% filter(skill == 'high')) %>% mutate(skill = 'high')
+  return_dfs <- bind_rows(l_s_by_champ, h_s_by_champ) %>% mutate(iter = j) #overall
+  return(return_dfs)
+}
+```  
+
+```{r}
+tic()
+n_sample <- 1
+res <- future_map(1:n_sample, full_null)
+result <- do.call('bind_rows', res)
+saveRDS(result, 'data/full_null_overall.rds')
+toc()
+```

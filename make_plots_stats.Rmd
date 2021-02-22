@@ -1,0 +1,1467 @@
+```{r}
+library(tidyverse)
+library(xtable)
+theme_set(theme_bw() +
+            theme(panel.grid.major=element_blank(), 
+                  panel.grid.minor=element_blank()))
+filter <- dplyr::filter
+select <- dplyr::select
+```
+
+There was a typo in the code which made the table which was present before running computationally expensive randomization inference, so "VILLAIN_HIGHER_KDA" is actually "HERO_HIGHER_KDA" (or you can reverse the 0 and 1). So now the 0 means that we observe a higher KDA.
+
+```{r}
+ri_files <- Sys.glob('data/stats/*.Rds')
+fake <- ri_files[-grep('real', ri_files)]
+datas = list()
+datas_ind = 1
+for (f in fake){
+  data = readRDS(f)
+  which_ri <- strsplit(f, '/')[[1]][3]
+  which_null = "changedriven"
+  if(grepl("full_null", which_ri, fixed=T)){
+  which_null = "full"
+  }  else if (grepl("behaviordriven", which_ri, fixed=T)){
+  which_null = "behavior"
+  }
+  data$null <- rep(which_null, data %>% nrow())
+  
+  position = "MID"
+  if (grepl("TOP", which_ri, fixed=T)){
+    position = "TOP"
+  }
+  data$position <- rep(position, data %>% nrow())
+  
+  time = "SHORT"
+  if (grepl("9639908701", which_ri, fixed=T)){
+    time="LONG"
+  }
+  if (grepl("777", which_ri, fixed=T)){
+    time="ONLYLONG"
+  }
+  data$timegap <- rep(time, data %>% nrow())
+  
+  which_experience = "WIN"
+  if (grepl("higher_kda", which_ri, fixed=T)){
+    which_experience="KDA"
+  }
+  data$which_experience <- rep(which_experience, data %>% nrow())
+  
+  datas[[datas_ind]] = data
+  datas_ind = datas_ind + 1
+}
+df <- do.call('rbind', datas)
+```
+
+```{r}
+real <- ri_files[grep('real', ri_files)]
+datas = list()
+datas_ind = 1
+for (f in real){
+  data = readRDS(f)
+  which_ri <- strsplit(f, '/')[[1]][3]
+  
+  position = "MID"
+  if (grepl("TOP", which_ri, fixed=T)){
+    position = "TOP"
+  }
+  data$position <- rep(position, data %>% nrow())
+  
+  time = "SHORT"
+  if (grepl("9639908701", which_ri, fixed=T)){
+    time="LONG"
+  }
+  if (grepl("777", which_ri, fixed=T)){
+    time="ONLYLONG"
+  }  
+  data$timegap <- rep(time, data %>% nrow())
+  which_experience = "WIN"
+  if (grepl("higher_kda", which_ri, fixed=T)){
+    which_experience="KDA"
+  }
+  data$which_experience <- rep(which_experience, data %>% nrow())
+  
+  datas[[datas_ind]] = data
+  datas_ind = datas_ind + 1
+}
+real.df <- do.call('rbind', datas)
+```
+
+```{r}
+small.real.df <- real.df %>%
+  filter(position == 'TOP', timegap=='LONG', which_experience=='WIN') 
+df.main <-   df %>%
+  filter(position == 'TOP', timegap=='LONG', which_experience=='WIN') %>%
+  select(-position, -timegap, -which_experience) %>%
+  group_by(skill, experience, null) %>%
+        summarize(null_mean = mean(test_stat),
+                  se = sd(test_stat), 
+                  lower_quintile = quantile(test_stat, .025),
+                  upper_quintile = quantile(test_stat, .975)) %>%
+    ungroup() %>%
+    left_join(small.real.df, by=c('skill', 'experience'))  %>%  
+  mutate(skill = ifelse(skill == 'high', 'High Skill', 'Low Skill'),
+         experience = ifelse(experience == 0, 'Win', 'Loss'),
+         null = ifelse(null == 'behavior', 'Behavior-Driven',
+                       ifelse(null == 'full', 'Full Null', 'Change-Driven'))
+         )  %>%
+    select(MatchProportion = test_stat, Skill = skill, Experience=experience, Null = null, everything())
+```
+
+```{r}
+overall <- df.main %>%
+  filter(is.na(Experience),
+         is.na(Skill))  %>%
+  mutate(Overall = 'Overall') 
+#  filter(which_null != 'Behavior Driven')
+ggplot(data = overall, aes(x = Overall, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("final_plots/overall_stats.png", width=5, height=5)
+```
+
+```{r}
+overall.tbl <- overall %>% 
+  filter(Null == 'Full Null')
+
+cat(paste(overall.tbl %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', overall.tbl %>% pull(lower_quintile) %>%formatC(digits=4), ',',overall.tbl %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+
+```{r}
+skill <- df.main %>%
+  filter(is.na(Experience),
+         !is.na(Skill)) 
+skill %>%
+ggplot(aes(x = Skill, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/skill_stats.png", width=5, height=5)
+```
+
+
+```{r}
+skill.tbl <- skill %>%
+  filter(Null == 'Full Null')
+skill.tbl.h <- skill.tbl %>% filter(Skill == 'High Skill')
+skill.tbl.l <- skill.tbl %>% filter(Skill == 'Low Skill')
+
+cat(paste(skill.tbl.h %>% pull(MatchProportion) %>% formatC(digits = 4), '$ with a null 95', '\\', '% CI of $[', skill.tbl.h %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.h %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+print('')
+cat(paste(skill.tbl.l %>% pull(MatchProportion) %>% formatC(digits = 4), '$ with a null 95', '\\', '% CI of $[', skill.tbl.l %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.l %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+
+```{r}
+payoff <- df.main %>%
+  filter(!is.na(Experience),
+         is.na(Skill)) 
+payoff %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m by Experience with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/payoff_stats.png", width=5, height=3)
+```
+
+```{r}
+p1 <- df.main %>%
+  filter(!is.na(Experience),
+         !is.na(Skill)) 
+p1 %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_grid(Skill~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3', size = .37) +  #modify size so you can see all the observed means
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m by Skill/Experience with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/payoff_by_skill_stats.png", width=5, height=4)
+```
+
+```{r}
+small.real.df <- real.df %>%
+  filter(position == 'MID', timegap=='LONG', which_experience=='WIN') 
+df.main <- df %>%
+  filter(position == 'MID', timegap=='LONG', which_experience=='WIN') %>%
+  select(-position, -timegap, -which_experience) %>%
+  group_by(skill, experience, null) %>%
+        summarize(null_mean = mean(test_stat),
+                  se = sd(test_stat), 
+                  lower_quintile = quantile(test_stat, .025),
+                  upper_quintile = quantile(test_stat, .975)) %>%
+    ungroup() %>%
+    left_join(small.real.df, by=c('skill', 'experience'))  %>%  
+  mutate(skill = ifelse(skill == 'high', 'High Skill', 'Low Skill'),
+         experience = ifelse(experience == 0, 'Win', 'Loss'),
+         null = ifelse(null == 'behavior', 'Behavior-Driven',
+                       ifelse(null == 'full', 'Full Null', 'Change-Driven'))
+         )  %>%
+    select(MatchProportion = test_stat, Skill = skill, Experience=experience, Null = null, everything())
+```
+
+```{r}
+overall <- df.main %>%
+  filter(is.na(Experience),
+         is.na(Skill))  %>%
+  mutate(Overall = 'Overall') 
+
+overall
+ggplot(data = overall, aes(x = Overall, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/overall_stats_mid.png", width=5, height=3)
+```
+
+```{r}
+overall.tbl <- overall %>% 
+  filter(Null == 'Full Null')
+
+cat(paste(overall.tbl %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', overall.tbl %>% pull(lower_quintile) %>%formatC(digits=4), ',',overall.tbl %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+```{r}
+skill <- df.main %>%
+  filter(is.na(Experience),
+         !is.na(Skill)) 
+skill %>%
+ggplot(aes(x = Skill, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/skill_stats_mid.png", width=5, height=3)
+```
+
+```{r}
+skill.tbl <- skill %>%
+  filter(Null == 'Full Null')
+skill.tbl.h <- skill.tbl %>% filter(Skill == 'High Skill')
+skill.tbl.l <- skill.tbl %>% filter(Skill == 'Low Skill')
+
+cat(paste(skill.tbl.h %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', skill.tbl.h %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.h %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+cat('\n')
+cat(paste(skill.tbl.l %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', skill.tbl.l %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.l %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+```{r}
+payoff <- df.main %>%
+  filter(!is.na(Experience),
+         is.na(Skill)) 
+payoff %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m by Skill/Experience with 95% Null CI, Mid Lane') +    
+  xlab(NULL)
+ggsave("plots/payoff_stats_mid.png", width=5, height=3)
+```
+
+```{r}
+p1 <- df.main %>%
+  filter(!is.na(Experience),
+         !is.na(Skill)) 
+p1 %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_grid(Skill~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m by Experience/Skill with 95% Null CI, Mid Lane') +    
+  xlab(NULL)
+ggsave("plots/payoff_by_skill_stats_mid.png", width=5, height=4)
+```
+
+```{r}
+small.real.df <- real.df %>%
+  filter(position == 'TOP', timegap=='LONG', which_experience=='KDA') 
+df.main <-   df %>%
+  filter(position == 'TOP', timegap=='LONG', which_experience=='KDA') %>%
+  select(-position, -timegap, -which_experience) %>%
+  group_by(skill, experience, null) %>%
+        summarize(null_mean = mean(test_stat),
+                  se = sd(test_stat), 
+                  lower_quintile = quantile(test_stat, .025),
+                  upper_quintile = quantile(test_stat, .975)) %>%
+    ungroup() %>%
+    left_join(small.real.df, by=c('skill', 'experience'))  %>%  
+  mutate(skill = ifelse(skill == 'high', 'High Skill', 'Low Skill'),
+         experience = ifelse(experience == 0, 'Higher KDA', 'Lower KDA'),
+         null = ifelse(null == 'behavior', 'Behavior-Driven',
+                       ifelse(null == 'full', 'Full Null', 'Change-Driven'))
+         )  %>%
+    select(MatchProportion = test_stat, Skill = skill, Experience=experience, Null = null, everything())
+```
+
+```{r}
+overall <- df.main %>%
+  filter(is.na(Experience),
+         is.na(Skill))  %>%
+  mutate(Overall = 'Overall') 
+
+ggplot(data = overall, aes(x = Overall, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/overall_stats_kda.png", width=5, height=3)
+```
+
+```{r}
+overall.tbl <- overall %>% 
+  filter(Null == 'Full Null')
+
+cat(paste(overall.tbl %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', overall.tbl %>% pull(lower_quintile) %>%formatC(digits=4), ',',overall.tbl %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+```{r}
+skill <- df.main %>%
+  filter(is.na(Experience),
+         !is.na(Skill)) 
+skill %>%
+ggplot(aes(x = Skill, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("final_plots/skill_stats_kda.png", width=5, height=5)
+```
+
+
+```{r}
+skill.tbl <- skill %>%
+  filter(Null == 'Full Null')
+skill.tbl.h <- skill.tbl %>% filter(Skill == 'High Skill')
+skill.tbl.l <- skill.tbl %>% filter(Skill == 'Low Skill')
+
+cat(paste(skill.tbl.h %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', skill.tbl.h %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.h %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+cat('\n')
+cat(paste(skill.tbl.l %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', skill.tbl.l %>% pull(lower_quintile) %>%formatC(digits=4), ',',skill.tbl.l %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+
+```{r}
+payoff <- df.main %>%
+  filter(!is.na(Experience),
+         is.na(Skill)) 
+payoff %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/payoff_stats_kda.png", width=5, height=3)
+```
+
+```{r}
+p1 <- df.main %>%
+  filter(!is.na(Experience),
+         !is.na(Skill)) 
+p1 %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_grid(Skill~Null) +     
+  geom_point() + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - se, ymax=null_mean + se)) + 
+#  geom_pointrange(aes(y = null_mean, ymin = null_mean - 2*se, ymax=null_mean + 2*se), linetype='dotted') + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/payoff_by_skill_stats_kda.png", width=5, height=4)
+```
+
+```{r}
+small.real.df <- real.df %>%
+  filter(position == 'TOP', which_experience=='WIN') 
+df.main <-   df %>%
+  filter(position == 'TOP', which_experience=='WIN') %>%
+  select(-position, -which_experience)  %>%
+  group_by(skill, experience, null, timegap) %>%
+        summarize(null_mean = mean(test_stat),
+                  se = sd(test_stat), 
+                  lower_quintile = quantile(test_stat, .025),
+                  upper_quintile = quantile(test_stat, .975))%>%
+    ungroup() %>%
+    left_join(small.real.df, by=c('skill', 'experience', 'timegap')) %>%
+  mutate(skill = ifelse(skill == 'high', 'High Skill', 'Low Skill'),
+         experience = ifelse(experience == 0, 'Win', 'Loss'),
+         null = ifelse(null == 'behavior', 'Behavior-Driven',
+                       ifelse(null == 'full', 'Full Null', 'Change-Driven'))
+         )  %>%
+    select(MatchProportion = test_stat, Skill = skill, Experience=experience, Null = null, everything())
+```
+
+
+
+```{r}
+timegap <- df.main %>%
+  filter(is.na(Experience),
+         is.na(Skill),
+         timegap != 'LONG')
+timegap %>%
+ggplot(aes(x = timegap, y=MatchProportion)) + 
+  geom_blank() +
+  facet_wrap(~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m with 95% Null CI') +    
+  xlab(NULL)
+```
+
+
+```{r}
+timegap.tbl <- timegap %>%
+  filter(Null == 'Full Null')
+timegap.tbl.h <- timegap.tbl %>% filter(timegap == 'ONLYLONG')
+timegap.tbl.l <- timegap.tbl %>% filter(timegap == 'SHORT')
+cat(paste(timegap.tbl.h %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', timegap.tbl.h %>% pull(lower_quintile) %>%formatC(digits=4), ',',timegap.tbl.h %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+cat('\n')
+cat(paste(timegap.tbl.l %>% pull(MatchProportion) %>% formatC(digits = 4), '$ and the 95', '\\', '% CI is $[', timegap.tbl.l %>% pull(lower_quintile) %>%formatC(digits=4), ',',timegap.tbl.l %>% pull(upper_quintile) %>% formatC(digits=4),']$', sep=''))
+```
+
+```{r}
+timegap <- df.main %>%
+  filter(!is.na(Experience),
+         is.na(Skill),
+         timegap != 'LONG')  %>%
+  mutate(timegap = ifelse(timegap == 'SHORT', 'Short', 'Long'))
+
+timegap %>%
+ggplot(aes(x = Experience, y=MatchProportion)) + 
+  geom_blank() +
+  facet_grid(timegap~Null) +     
+  geom_point() + 
+  geom_pointrange(aes(y = null_mean, ymin = lower_quintile, ymax = upper_quintile), color='steelblue3') + 
+  scale_y_continuous(limits=c(0, .03)) + 
+  ylab("m, Match Proportion") +  
+  ggtitle('Observed m by Timegap/Experience with 95% Null CI') +    
+  xlab(NULL)
+ggsave("plots/timegap_stats.png", width=5, height=4)
+```
+
+```{r}
+filename <- 'data/tbt_bootstrap.rds'
+boot_df1 <- readRDS(filename) %>%
+  mutate(timegap = 'LONG')
+filename <- 'data/tbt_bootstrap_timegap.rds'
+boot_df2 <- readRDS(filename) %>%
+  mutate(timegap = ifelse(timegap == 'long', 'ONLYLONG', 'SHORT'),
+         skill = NA)
+boot.df <- rbind(boot_df1, boot_df2) %>%
+  rename(experience = hero_win) 
+```
+
+Comparisons for base
+```{r}
+n_sample <- 10000
+set.seed(1)
+filename <- 'data/tbt_bootstrap.rds'
+boot_df1 <- readRDS(filename) %>%
+  mutate(timegap = 'LONG')
+filename <- 'data/tbt_bootstrap_timegap.rds'
+boot_df2 <- readRDS(filename) %>%
+  mutate(timegap = ifelse(timegap == 'long', 'ONLYLONG', 'SHORT'),
+         skill = NA)
+boot.df <- rbind(boot_df1, boot_df2) %>%
+  rename(experience = hero_win) 
+hsbs <- boot.df %>%
+  filter(skill == 'high', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hsnd <- df %>% 
+  filter(skill == 'high', is.na(experience), timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hs_diff <- hsbs-hsnd
+
+lsbs <- boot.df %>%
+  filter(skill == 'low', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lsnd <- df %>% 
+  filter(skill == 'low', is.na(experience), timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ls_diff <- lsbs - lsnd
+
+m11 = mean(hs_diff)
+sd11 = sd(hs_diff)
+m12 = mean(ls_diff)
+sd12 = sd(ls_diff)
+
+df1 <- tibble(foo = ls_diff,
+       bar = hs_diff) %>%
+  mutate(zzz = bar - foo,
+         pos = ifelse(zzz > 0, 1, 0)) %>%
+  summarize(pval = 1 - mean(pos),
+            delta = mean(zzz),
+            comp = 'High vs Low Skill')
+
+owbs <-   boot.df %>%
+  filter( is.na(skill), experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ownd <- df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ow_diff <- owbs - ownd
+
+olbs <- boot.df %>%
+  filter( is.na(skill), experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <- df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd
+
+m21 <- mean(ow_diff)
+sd21 <- sd(ow_diff)
+m22 <- mean(ol_diff)
+sd22 <- sd(ol_diff)
+
+df2 <- tibble(foo = ow_diff,
+       bar = ol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss')
+
+#payoff, for high skill 
+howbs <- boot.df %>%
+  filter(skill == 'high', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hownd <- df %>% 
+  filter(skill == 'high', experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+how_diff <- howbs - hownd
+
+holbs <-   boot.df %>%
+  filter( skill == 'high', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+holnd <- df %>% 
+  filter(skill == 'high', experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hol_diff <- holbs - holnd
+
+m31 = mean(how_diff)
+sd31 = sd(how_diff)
+m32 = mean(hol_diff)
+sd32 = mean(hol_diff)
+
+df3 <- tibble(foo = how_diff,
+       bar = hol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss, High Skill Players')
+
+#payoff, for low skill
+lowbs <- boot.df %>%
+  filter(skill == 'low', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lownd <- df %>% 
+  filter(skill == 'low', experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+low_diff <- lowbs - lownd
+
+lolbs <-   boot.df %>%
+  filter( skill == 'low', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lolnd <- df %>% 
+  filter(skill == 'low', experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+lol_diff <- lolbs - lolnd
+
+m41 <- mean(low_diff)
+sd41 <- sd(low_diff)
+m42 <- mean(lol_diff)
+sd42 <- sd(lol_diff)
+
+df4 <- tibble(foo = low_diff,
+       bar = lol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Low Skill Players')
+
+#timegap
+olbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd
+
+osbs <- boot.df %>% 
+  filter(timegap == 'SHORT', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+osnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+os_diff <- osbs - osnd
+
+m51 <- mean(os_diff)
+sd51 <- sd(os_diff)
+m52 <- mean(ol_diff)
+sd52 <- sd(ol_diff)
+
+df5 <- tibble(foo = ol_diff,
+       bar = os_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Short vs Long Timegap'
+  )
+
+#observed win vs loss, ONLYLONG timegap
+olwbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olwnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olwdiff <- olwbs - olwnd
+
+ollbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ollnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olldiff <- ollbs - ollnd
+
+
+m61 = mean(olwdiff)
+sd61 = sd(olwdiff)
+m62 = mean(olldiff)
+sd62 = sd(olldiff)
+
+df6 <- tibble(foo = olwdiff,
+       bar = olldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Long Timegap')
+
+#observed win versus loss, short delay
+oswbs <- boot.df %>% 
+  filter(timegap == 'SHORT', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oswnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+oswdiff <- oswbs - oswnd
+
+oslbs <- boot.df %>% 
+filter(timegap == 'SHORT', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oslnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+osldiff <- oslbs - oslnd
+
+m71 = mean(oswdiff)
+sd71 = sd(oswdiff)
+m72 = mean(osldiff)
+sd72 = sd(osldiff)
+
+df7<- tibble(foo = oswdiff,
+       bar = osldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Short Timegap')
+
+comp.df <- rbind(df1, df2, df3, df4, df5, df6, df7)%>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'P-value'=pval, 'Significance' = signif)
+
+print(xtable(comp.df, caption = 'Comparisons of how the observed value of $m$ compares to its mean under the full null distribution for a variety of scenarios.  We find that the difference between $m$ and its null expectation is significantly higher in games where the user observes a win rather than a loss.  Further, we find that this difference is mainly driven by high skill users.  We find no significant differences in the difference between $m$ and its null expectation between high skill and low skill games, even when separately considering games with an observed wins and losses.', include.rownames=FALSE, digits=c(0,0,4,3,0)))
+```
+```{r}
+m1 = m11 - m12
+se1 = sqrt(sd11^2 + sd12^2)
+p1 = 1 - pnorm(m1, mean=0, sd=se1)
+
+m2 = m21 - m22
+se2 = sqrt(sd21^2 + sd22^2)
+p2 = 1 - pnorm(m2, mean=0, sd=se2)
+
+m3 = m31 - m32
+se3 = sqrt(sd31^2 + sd32^2)
+p3 = 1 - pnorm(m3, mean=0, sd=se3)
+
+m4 = m41 - m42
+se4 = sqrt(sd41^2 + sd42^2)
+p4 = 1 - pnorm(m4, mean=0, sd=se4)
+
+m5 = m51 - m52
+se5 = sqrt(sd51^2 + sd52^2)
+p5 = 1 - pnorm(m5, mean=0, sd=se5)
+
+m6 = m61 - m62
+se6 = sqrt(sd61^2 + sd62^2)
+p6 = 1 - pnorm(m6, mean=0, sd=se6)
+
+m7 = m71 - m72
+se7 = sqrt(sd71^2 + sd72^2)
+p7 = 1 - pnorm(m7, mean=0, sd=se7)
+
+comp.df <- tibble(delta = c(m1, m2, m3, m4, m5, m6, m7),
+       se = c(se1, se2, se3, se4, se5, se6, se7),
+       pval = c(p1, p2, p3, p4, p5, p6, p7),
+       comp = comp.df$Comparison) %>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'SE' = se, 'P-value'=pval, 'Significance' = signif)  
+print(xtable(comp.df, label='tab:comp', caption = 'Comparisons of how the observed value of $m$ compares to its mean under the full null distribution for a variety of scenarios.  We find that the difference between $m$ and its null expectation is not significantly different for high skill vs low skill users (row 1), but is significantly higher in games where the user observes a win rather than a loss (row 2), suggesting experience-driven peer effect.  Further, we find that this difference is mainly driven by high skill users (rows 3, 4).  Considering heterogeneity by time, we find that $m$ exceeds its null more when the user chooses their next champion within an hour of observing the experience (short timegap) than waiting more than an hour (row 5).  Furthermore, we find that the experience-driven peer effect is only significant in the short timegap regime (rows 6, 7), although directionally the same in both timegap settings.', include.rownames=FALSE, digits=c(0,0,4,5,3,0)))
+
+```
+
+```{r}
+#point estimates
+ls_bc <- readRDS('data/ls_bc.rds')
+hs_bc <- readRDS('data/hs_bc.rds')
+
+all_pe <- bind_rows(ls_bc %>% mutate(skill = 'low'), hs_bc %>% mutate(skill = 'high')) %>%
+  mutate(tot_obs = ch_other + ch_obs) 
+popularity_df <- readRDS('data/popularity_df_stats.Rds') %>%
+  select(skill, champ, pct_played) %>%
+  rename(champ_name = champ)
+all_pe <- all_pe %>% 
+  left_join(popularity_df, by=c('champ_name', 'skill')) %>%
+  mutate(pct_played = ifelse(is.na(pct_played), 0, pct_played)) %>%
+  group_by(skill) %>%  
+  arrange(-pct_played) %>%
+  mutate(rank = row_number()) %>%
+  ungroup() 
+```
+Full Null
+```{r}
+all_null_bc <- readRDS('data/full_null_overall.rds')
+all_null_bc <- all_null_bc %>%
+  group_by(champ_name, skill) %>%
+  summarize(null_mp = mean(m_p),
+            n = n(),
+            null_lower = quantile(m_p, .025),
+            null_upper = quantile(m_p, .975)
+            )
+inf.df <- all_pe %>%
+  left_join(all_null_bc, by=c('champ_name', 'skill')) %>%
+  mutate(delta = m_p - null_mp)
+
+inf.df %>%
+  mutate(skill = ifelse(skill == 'high', 'High', 'Low')) %>%
+  ggplot(data = ., aes(x = pct_played, y=delta)) + 
+  facet_wrap(~skill) + 
+  geom_point()  +
+  geom_smooth(method='lm', se = F) + 
+  ggtitle('Observed m by Champion') + 
+  xlab('Champion Popularity') + 
+  ylab('Delta') + 
+  theme(plot.title = element_text(hjust = 0.5))
+inf.df %>% 
+  arrange(-delta)
+ggsave("plots/full_null_by_champ_pop_stats.png", width=5, height=3)
+```
+
+ROBUSTNESS CHECKS
+
+Comparisons for KDA
+```{r}
+set.seed(1)
+filename <- 'data/tbt_bootstrap_kda.rds'
+boot_df1 <- readRDS(filename) %>%
+  mutate(timegap = 'LONG')
+filename <- 'data/tbt_bootstrap_timegap_kda.rds'
+boot_df2 <- readRDS(filename) %>%
+  mutate(timegap = ifelse(timegap == 'long', 'ONLYLONG', 'SHORT'),
+         skill = NA)
+boot.df <- rbind(boot_df1, boot_df2) %>%
+  rename(experience = villain_higher_kda) 
+n_sample <- 10000
+hsbs <- boot.df %>%
+  filter(skill == 'high', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hsnd <- df %>% 
+  filter(skill == 'high', is.na(experience), timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hs_diff <- hsbs-hsnd
+
+lsbs <- boot.df %>%
+  filter(skill == 'low', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lsnd <- df %>% 
+  filter(skill == 'low', is.na(experience), timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ls_diff <- lsbs - lsnd
+
+m11 = mean(hs_diff)
+sd11 = sd(hs_diff)
+m12 = mean(ls_diff)
+sd12 = sd(ls_diff)
+
+df1 <- tibble(foo = ls_diff,
+       bar = hs_diff) %>%
+  mutate(zzz = bar - foo,
+         pos = ifelse(zzz > 0, 1, 0)) %>%
+  summarize(pval = 1 - mean(pos),
+            delta = mean(zzz),
+            comp = 'High vs Low Skill')
+
+olbs <-   boot.df %>%
+  filter( is.na(skill), experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <- df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd #observed lower kda
+
+ohbs <-   boot.df %>%
+  filter( is.na(skill), experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ohnd <- df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+oh_diff <- ohbs - ohnd #observed higher kda
+
+m21 = mean(oh_diff)
+sd21 = sd(oh_diff)
+m22 = mean(ol_diff)
+sd22 = sd(ol_diff)
+
+df2 <- tibble(foo = ol_diff,
+       bar = oh_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Higher vs Lower KDA')
+
+holbs <- boot.df %>%
+  filter(skill == 'high', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+holnd <- df %>% 
+  filter(skill == 'high', experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hol_diff <- holbs - holnd
+
+hohbs <-   boot.df %>%
+  filter( skill == 'high', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hohnd <- df %>% 
+  filter(skill == 'high', experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hoh_diff <- hohbs - hohnd
+
+m31 = mean(hoh_diff)
+sd31 = sd(hoh_diff)
+m32 = mean(hol_diff)
+sd32 = sd(hol_diff)
+
+df3 <- tibble(foo = hol_diff,
+       bar = hoh_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Higher vs Lower KDA, High Skill Players')
+
+#payoff, for low skill
+lolbs <- boot.df %>%
+  filter(skill == 'low', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lolnd <- df %>% 
+  filter(skill == 'low', experience == 1, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+lol_diff <- lolbs - lolnd
+
+lohbs <-   boot.df %>%
+  filter( skill == 'low', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lohnd <- df %>% 
+  filter(skill == 'low', experience == 0, timegap == 'LONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+loh_diff <- lohbs - lohnd
+
+m41 = mean(loh_diff)
+sd41 = sd(loh_diff)
+m42 = mean(lol_diff)
+sd42 = sd(lol_diff)
+
+df4 <- tibble(foo = lol_diff,
+       bar = loh_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Higher vs Lower KDA, Low Skill Players')
+
+#timegap
+olbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd
+
+osbs <- boot.df %>% 
+  filter(timegap == 'SHORT', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+osnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+os_diff <- osbs - osnd
+
+m51 = mean(os_diff)
+sd51 = sd(os_diff)
+m52 = mean(ol_diff)
+sd52 = sd(ol_diff)
+
+df5 <- tibble(foo = ol_diff,
+       bar = os_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Short vs Long Delay'
+  )
+
+#observed higher vs lower kda, ONLYLONG timegap
+olhbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olhnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olhdiff <- olhbs - olhnd
+
+ollbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ollnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'ONLYLONG', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olldiff <- ollbs - ollnd
+
+m61 = mean(olhdiff)
+sd61 = sd(olhdiff)
+m62 = mean(olldiff)
+sd62 = sd(olldiff)
+
+df6 <- tibble(foo = olhdiff,
+       bar = olldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Higher vs Lower KDA, Long Timegap')
+
+#observed win versus loss, short delay
+oswbs <- boot.df %>% 
+  filter(timegap == 'SHORT', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oswnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+oswdiff <- oswbs - oswnd
+
+oslbs <- boot.df %>% 
+filter(timegap == 'SHORT', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oslnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'SHORT', null == 'full', position == 'TOP', which_experience == 'KDA') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+osldiff <- oslbs - oslnd
+
+m71 = mean(oswdiff)
+sd71 = sd(oswdiff)
+m72 = mean(osldiff)
+sd72 = sd(osldiff)
+
+df7<- tibble(foo = oswdiff,
+       bar = osldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Higher vs Lower KDA, Short Timegap')
+
+comp.df.kda <- rbind(df1, df2, df3, df4, df5, df6, df7)%>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'P-value'=pval, 'Significance' = signif)
+```
+
+```{r}
+m1 = m11 - m12
+se1 = sqrt(sd11^2 + sd12^2)
+p1 = 1 - pnorm(m1, mean=0, sd=se1)
+
+m2 = m21 - m22
+se2 = sqrt(sd21^2 + sd22^2)
+p2 = 1 - pnorm(m2, mean=0, sd=se2)
+
+m3 = m31 - m32
+se3 = sqrt(sd31^2 + sd32^2)
+p3 = 1 - pnorm(m3, mean=0, sd=se3)
+
+m4 = m41 - m42
+se4 = sqrt(sd41^2 + sd42^2)
+p4 = 1 - pnorm(m4, mean=0, sd=se4)
+
+m5 = m51 - m52
+se5 = sqrt(sd51^2 + sd52^2)
+p5 = 1 - pnorm(m5, mean=0, sd=se5)
+
+m6 = m61 - m62
+se6 = sqrt(sd61^2 + sd62^2)
+p6 = 1 - pnorm(m6, mean=0, sd=se6)
+
+m7 = m71 - m72
+se7 = sqrt(sd71^2 + sd72^2)
+p7 = 1 - pnorm(m7, mean=0, sd=se7)
+
+comp.df.kda.norm <- tibble(delta = c(m1, m2, m3, m4, m5, m6, m7),
+       se = c(se1, se2, se3, se4, se5, se6, se7),
+       pval = c(p1, p2, p3, p4, p5, p6, p7),
+       comp = comp.df.kda$Comparison) %>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'SE' = se, 'P-value'=pval, 'Significance' = signif)    
+```
+
+Comparisons for mid
+```{r}
+set.seed(1)
+n_sample <- 10000
+filename <- 'data/tbt_bootstrap_mid.rds'
+boot_df1 <- readRDS(filename) %>%
+  mutate(timegap = 'LONG')
+filename <- 'data/tbt_bootstrap_timegap_mid.rds'
+boot_df2 <- readRDS(filename) %>%
+  mutate(timegap = ifelse(timegap == 'long', 'ONLYLONG', 'SHORT'),
+         skill = NA)
+boot.df <- rbind(boot_df1, boot_df2) %>%
+  rename(experience = hero_win) 
+hsbs <- boot.df %>%
+  filter(skill == 'high', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hsnd <- df %>% 
+  filter(skill == 'high', is.na(experience), timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hs_diff <- hsbs-hsnd
+
+lsbs <- boot.df %>%
+  filter(skill == 'low', is.na(experience), timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lsnd <- df %>% 
+  filter(skill == 'low', is.na(experience), timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ls_diff <- lsbs - lsnd
+
+m11 = mean(hs_diff)
+sd11 = sd(hs_diff)
+m12 = mean(ls_diff)
+sd12 = sd(ls_diff)
+
+df1 <- tibble(foo = ls_diff,
+       bar = hs_diff) %>%
+  mutate(zzz = bar - foo,
+         pos = ifelse(zzz > 0, 1, 0)) %>%
+  summarize(pval = 1 - mean(pos),
+            delta = mean(zzz),
+            comp = 'High vs Low Skill')
+
+owbs <-   boot.df %>%
+  filter( is.na(skill), experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ownd <- df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ow_diff <- owbs - ownd
+
+olbs <-   boot.df %>%
+  filter( is.na(skill), experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <- df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd
+
+m21 = mean(ow_diff)
+sd21 = sd(ow_diff)
+m22 = mean(ol_diff)
+sd22 = sd(ol_diff)
+
+df2 <- tibble(foo = ow_diff,
+       bar = ol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss')
+
+#payoff, for high skill 
+howbs <- boot.df %>%
+  filter(skill == 'high', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+hownd <- df %>% 
+  filter(skill == 'high', experience == 0, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+how_diff <- howbs - hownd
+
+holbs <-   boot.df %>%
+  filter( skill == 'high', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+holnd <- df %>% 
+  filter(skill == 'high', experience == 1, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+hol_diff <- holbs - holnd
+
+m31 = mean(how_diff)
+sd31 = sd(hoh_diff)
+m32 = mean(hol_diff)
+sd32 = sd(hol_diff)
+
+df3 <- tibble(foo = how_diff,
+       bar = hol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss, High Skill Players')
+
+#payoff, for low skill
+lowbs <- boot.df %>%
+  filter(skill == 'low', experience == 0, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lownd <- df %>% 
+  filter(skill == 'low', experience == 0, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+low_diff <- lowbs - lownd
+
+lolbs <-   boot.df %>%
+  filter( skill == 'low', experience == 1, timegap == 'LONG') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+lolnd <- df %>% 
+  filter(skill == 'low', experience == 1, timegap == 'LONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+lol_diff <- lolbs - lolnd
+
+m41 = mean(low_diff)
+sd41 = sd(loh_diff)
+m42 = mean(lol_diff)
+sd42 = sd(lol_diff)
+
+df4 <- tibble(foo = low_diff,
+       bar = lol_diff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Low Skill Players')
+
+#timegap
+olbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'ONLYLONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+ol_diff <- olbs - olnd
+
+osbs <- boot.df %>% 
+  filter(timegap == 'SHORT', is.na(experience)) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+osnd <-  df %>% 
+  filter(is.na(skill), is.na(experience), timegap == 'SHORT', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+os_diff <- osbs - osnd
+
+m51 = mean(os_diff)
+sd51 = sd(os_diff)
+m52 = mean(ol_diff)
+sd52 = sd(ol_diff)
+
+df5 <- tibble(foo = ol_diff,
+       bar = os_diff,
+       zzz = bar - foo) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+            delta = mean(zzz),
+            comp = 'Short vs Long Timegap'
+  )
+
+#observed higher vs lower kda, ONLYLONG timegap
+olhbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+olhnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'ONLYLONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olhdiff <- olhbs - olhnd
+
+ollbs <- boot.df %>% 
+  filter(timegap == 'ONLYLONG', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+ollnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'ONLYLONG', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+olldiff <- ollbs - ollnd
+
+m61 = mean(olhdiff)
+sd61 = sd(olhdiff)
+m62 = mean(olldiff)
+sd62 = sd(olldiff)
+
+df6 <- tibble(foo = olhdiff,
+       bar = olldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Long Timegap')
+
+#observed win versus loss, short delay
+oswbs <- boot.df %>% 
+  filter(timegap == 'SHORT', experience == 0) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oswnd <-  df %>% 
+  filter(is.na(skill), experience == 0, timegap == 'SHORT', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+oswdiff <- oswbs - oswnd
+
+oslbs <- boot.df %>% 
+filter(timegap == 'SHORT', experience == 1) %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat) 
+oslnd <-  df %>% 
+  filter(is.na(skill), experience == 1, timegap == 'SHORT', null == 'full', position == 'MID', which_experience == 'WIN') %>%
+  sample_n(n_sample, replace=T) %>%
+  pull(test_stat)   
+osldiff <- oslbs - oslnd
+
+m71 = mean(oswdiff)
+sd71 = sd(oswdiff)
+m72 = mean(osldiff)
+sd72 = sd(osldiff)
+
+df7<- tibble(foo = oswdiff,
+       bar = osldiff,
+       zzz = foo - bar) %>%
+  mutate(pos = ifelse(zzz> 0, 1, 0)) %>%
+  summarize(pval = 1-mean(pos),
+    delta = mean(zzz),
+            comp = 'Observed Win vs Loss, Short Timegap')
+
+comp.df.mid <- rbind(df1, df2, df3, df4, df5, df6, df7)%>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'P-value'=pval, 'Significance' = signif)    
+```
+```{r}
+m1 = m11 - m12
+se1 = sqrt(sd11^2 + sd12^2)
+p1 = 1 - pnorm(m1, mean=0, sd=se1)
+
+m2 = m21 - m22
+se2 = sqrt(sd21^2 + sd22^2)
+p2 = 1 - pnorm(m2, mean=0, sd=se2)
+
+m3 = m31 - m32
+se3 = sqrt(sd31^2 + sd32^2)
+p3 = 1 - pnorm(m3, mean=0, sd=se3)
+
+m4 = m41 - m42
+se4 = sqrt(sd41^2 + sd42^2)
+p4 = 1 - pnorm(m4, mean=0, sd=se4)
+
+m5 = m51 - m52
+se5 = sqrt(sd51^2 + sd52^2)
+p5 = 1 - pnorm(m5, mean=0, sd=se5)
+
+m6 = m61 - m62
+se6 = sqrt(sd61^2 + sd62^2)
+p6 = 1 - pnorm(m6, mean=0, sd=se6)
+
+m7 = m71 - m72
+se7 = sqrt(sd71^2 + sd72^2)
+p7 = 1 - pnorm(m7, mean=0, sd=se7)
+
+comp.df.mid.norm <- tibble(delta = c(m1, m2, m3, m4, m5, m6, m7),
+       se = c(se1, se2, se3, se4, se5, se6, se7),
+       pval = c(p1, p2, p3, p4, p5, p6, p7),
+       comp = comp.df.mid$Comparison) %>%
+  mutate(signif = ifelse(pval > .05, '', 
+                         ifelse(pval > .01, '*',
+                                ifelse(pval > .001, '**', '***')))) %>%
+  select('Comparison' = comp, 'Delta' = delta, 'SE' = se, 'P-value'=pval, 'Significance' = signif)    
+```
+
+```{r}
+comp.robust <- rbind(comp.df.kda.norm %>%
+  filter(Comparison != 'High vs Low Skill',
+         Comparison != 'Short vs Long Delay'),
+  comp.df.mid.norm %>%
+  mutate(Comparison = paste(Comparison, ', Mid Lane', sep = ''))
+  )
+print(xtable(comp.robust, label="tab:robust", caption = 'Comparisons in our two robustness checks, where we consider a different experience (observing a higher KDA) and then a different position in the game (Mid Lane).  We find our main effect of interest holds, where the increase in $m$ over the null is significantly higher when observing a positive experience than a negative experience (rows 1, 7), meaning that we still detect experience-driven peer effects even if we vary the measure of experience or the position considered.  Revisiting heterogeneity, we again find no evidence of difference in the overall peer effect by skill (row 6) in the Mid Lane, and contrary to the top lane we find no evidence of the time gap mattering for the overall peer effect (row 10).  Examining the heterogeneity of the experience-driven peer effect, we find that although the experience-driven effects in our main analysis were driven by high skill users, which is echoed in our KDA robustness check (rows 2, 3), for the Mid Lane analysis the effect is actually greater in the lower skill players (rows 8, 9), although in neither case was the strength of the effect between skill levels significantly different. Finally, examining heterogeneity of the experience-driven effect by timegap, we find the effect is mainly driven by games with a short timegap (rows 4, 5, 11, 12), which is directionally the same as our main analysis, although again lack the power to detect statistical significance.', include.rownames=FALSE, digits=c(0,0,4,5,3,0)))
+```
+

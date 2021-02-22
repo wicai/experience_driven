@@ -1,0 +1,322 @@
+```{r}
+library(anytime)
+library(tidyverse)
+library(ggplot2)
+library(broom)
+library(tidyr)
+library(modelr)
+library(purrr)
+library(dplyr)
+library(lubridate)
+library(furrr)
+library(xtable)
+library(tictoc)
+plan(multicore, workers = max(availableCores(constraints = "multicore")%/%2, 1))
+```
+
+```{r}
+big_reality <- readRDS('data/big_reality_stats.rds')
+```
+
+```{r}
+main_reality <-   big_reality %>% 
+  filter(hero_role == 'TOP') 
+main_reality %>%
+  mutate(skill = ifelse(skill == 'high', 'High', 'Low')) %>%
+  count(champ, skill) %>%
+  group_by(skill) %>%
+  arrange(-n) %>%
+  mutate(rn = row_number()) %>%
+  ggplot(aes(x = rn, y = n)) + 
+  geom_bar(stat = 'identity') + 
+  xlab('Champion Popularity Rank') + 
+  ylab('Games played with Champion') + 
+  facet_wrap(~skill)
+ggsave("plots/desc_champ_popularity_stats.png", width=5, height=2.5)
+```
+
+```{r}
+popularity_df <- main_reality %>%
+  group_by(skill, champ) %>%
+  summarize(n_played = n()) %>%
+  mutate(pct_played = n_played/sum(n_played)) 
+saveRDS(popularity_df, 'data/popularity_df_stats.Rds')
+```
+
+Descriptives
+```{r}
+per_skill <- main_reality %>%
+  mutate(skill = ifelse(skill == 'high', 'High', 'Low')) %>%  
+  count(skill) %>%
+  rename('Total Games' = n)
+n_players <- main_reality %>%
+  mutate(skill = ifelse(skill == 'high', 'High', 'Low')) %>%    
+  group_by(skill) %>%
+  distinct(player_id) %>%
+  summarize('# Active Players' = n())
+pp_per_skill <- main_reality %>%
+  mutate(skill = ifelse(skill == 'high', 'High', 'Low')) %>%    
+  count(skill, player_id) %>%
+  group_by(skill) %>%
+  summarize('Mean GPP' = mean(n), 
+            'SD GPP' = sd(n))
+desc <- per_skill%>%
+  left_join(n_players, by='skill') %>%  
+  left_join(pp_per_skill, by='skill') %>%
+  rename(Skill = skill) 
+print(xtable(desc, caption = 'Summary statistics of scraped games where our scraped player chose first and played the ``top lane\'\' position, where GPP stands for games per player.'), include.rownames=FALSE)
+
+desc2 <- desc %>% 
+  pivot_longer(cols = c('Total Games', '# Active Players', 'Mean GPP', 'SD GPP')) %>%
+  group_by(name) %>%
+  pivot_wider(names_from=Skill) %>%
+  select(Statistic = name, 'High Skill' = 'High', 'Low Skill' = 'Low')
+
+print(xtable(desc2, caption = 'Summary statistics of scraped games where our scraped player chose first and played the ``top lane\'\' position, where GPP stands for games per player.', label = 'ref:desc'), include.rownames=FALSE)
+```
+
+```{r}
+experiences <- c('hero_win', 'villain_higher_kda')
+lanes <- c('TOP', 'MIDDLE')
+timegaps <- c(3600 * 1000, big_reality %>% summarize(f = max(timegap)) %>% pull(f) + 1, 777)
+
+cutter <- function(lane, experience_index, next_game_time){
+  experience_name = experiences[experience_index]
+  minus = experiences[-experience_index]
+  reality <- big_reality %>% 
+    filter(hero_role == lane) %>%
+    select(experience = experience_name, everything(),-minus) %>%
+    filter(!is.na(experience))
+  if (next_game_time != 777){
+    reality <- reality %>% 
+      filter(timegap < next_game_time) 
+  }else{
+    print('got to 777')
+     reality <- reality %>%
+       filter(timegap > 3600*1000) #get the ones between 3600 * 1000 and max_time
+  }
+  return(reality)
+}
+```
+
+```{r}
+test_stat <- function(df){
+reality.res <- df %>% 
+  mutate(c_ob = ifelse(choice == observed, 1, 0)) 
+reality.res <- reality.res %>%
+  group_by(player_id, c_ob) %>%
+  summarize(count = n()) %>%
+  spread(key=c_ob, value=count)
+  if (length(colnames(reality.res)) < 3){
+    if ('0' %in% colnames(reality.res)){
+      return(0)
+    }
+    return(1)
+  }
+  reality.res <- reality.res %>%
+  `colnames<-`(c("player_id", "ch_other", "ch_obs")) %>%
+  mutate(ch_other = ifelse(is.na(ch_other), 0, ch_other),
+         ch_obs = ifelse(is.na(ch_obs), 0, ch_obs)) %>%
+  mutate(prop_obs = ch_obs/(ch_obs + ch_other),
+         count = ch_obs + ch_other) %>%
+  select(player_id, prop_obs, count) %>%
+  ungroup()
+res <- reality.res  %>%
+  summarize(ch_obs_prop = mean(prop_obs)) %>%
+  pull(ch_obs_prop)
+return(res)
+}
+```
+
+```{r}
+compute_test_stat <- function(reality){
+  test_stats <- c(
+    test_stat(reality),
+    test_stat(reality %>% filter(skill == 'high')),
+    test_stat(reality %>% filter(skill == 'low')),
+    test_stat(reality %>% filter(experience == 0)),
+    test_stat(reality %>% filter(experience == 1)),
+    test_stat(reality %>% filter(skill == 'high') %>% filter(experience == 0)),
+    test_stat(reality %>% filter(skill == 'low') %>% filter(experience == 0)),
+    test_stat(reality %>% filter(skill == 'high') %>% filter(experience == 1)),
+    test_stat(reality %>% filter(skill == 'low') %>% filter(experience == 1)))
+  point_est <- tibble(skill = c(NA, 'high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+         experience = c(NA, NA, NA, 0, 1, 0, 0, 1, 1),
+         test_stat = test_stats)
+  return(point_est)
+}
+```
+
+```{r}
+behavior_driven <- function(j){
+ no_obs_hw <- reality %>%
+    select(-experience) 
+  fake_obs <- c()
+  
+  #resample wins 
+  this_expr <- no_obs_hw %>%
+    left_join(experiencerates, by=c('skill', 'observed', 'time_slice')) %>%
+    select(-experience, -tot)%>%
+    pull(pct_experience)
+  fake_experience <- future_map(this_expr, rbernoulli, n=1)
+  no_obs_hw$experience <- unlist(fake_experience)
+  no_obs_hw <- no_obs_hw %>% 
+    mutate(experience = ifelse(experience, 1, 0))
+  
+  #compute test statistic
+  point_est <- compute_test_stat(no_obs_hw)  
+  return(point_est)
+}
+
+change_driven <- function(j){
+ no_obs_hw <- reality %>%
+    select(-observed)
+  fake_obs <- c()
+  #resample observed champions
+  for (i in 1:nrow(no_obs_hw)){
+  not_allowed <- c(no_obs_hw$champ[i], no_obs_hw$ban_1[i],no_obs_hw$ban_2[i],no_obs_hw$ban_3[i],no_obs_hw$ban_4[i],no_obs_hw$ban_5[i],no_obs_hw$ban_6[i],no_obs_hw$ban_7[i],no_obs_hw$ban_8[i],no_obs_hw$ban_9[i],no_obs_hw$ban_10[i])
+  not_allowed <- not_allowed[!is.na(not_allowed)]
+  this_time_slice <- no_obs_hw$time_slice[i]
+  this_skill_inner <- no_obs_hw$skill[i]
+  test <- null_freqs %>%
+    filter(time_slice == this_time_slice,
+           !observed %in% not_allowed,
+           skill == this_skill_inner) %>%
+    sample_n(1, weight=count, replace=T) %>%
+    pull(observed)
+  fake_obs <- c(fake_obs, test)
+  }
+  no_obs_hw$observed <- fake_obs
+
+  #compute test statistic
+  point_est <- compute_test_stat(no_obs_hw)
+  return(point_est)
+}
+
+full_null <- function(j){
+ no_obs_hw <- reality %>%
+    select(-experience) %>%
+    select(-observed)
+  fake_obs <- c()
+  #resample observed champions
+  for (i in 1:nrow(no_obs_hw)){
+  not_allowed <- c(no_obs_hw$champ[i], no_obs_hw$ban_1[i],no_obs_hw$ban_2[i],no_obs_hw$ban_3[i],no_obs_hw$ban_4[i],no_obs_hw$ban_5[i],no_obs_hw$ban_6[i],no_obs_hw$ban_7[i],no_obs_hw$ban_8[i],no_obs_hw$ban_9[i],no_obs_hw$ban_10[i])
+  not_allowed <- not_allowed[!is.na(not_allowed)]
+  this_time_slice <- no_obs_hw$time_slice[i]
+  this_skill_inner <- no_obs_hw$skill[i]
+  test <- null_freqs %>%
+    filter(time_slice == this_time_slice,
+           !observed %in% not_allowed,
+           skill == this_skill_inner) %>%
+    sample_n(1, weight=count, replace=T) %>%
+    pull(observed)
+  fake_obs <- c(fake_obs, test)
+  }
+  no_obs_hw$observed <- fake_obs
+  
+  #resample experience
+  this_expr <- no_obs_hw %>%
+    left_join(experiencerates, by=c('skill', 'observed', 'time_slice')) %>%
+    select(-experience, -tot)%>%
+    pull(pct_experience)
+  fake_experience <- future_map(this_expr, rbernoulli, n=1)
+  no_obs_hw$experience <- unlist(fake_experience)
+  no_obs_hw <- no_obs_hw %>% 
+    mutate(experience = ifelse(experience, 1, 0))
+  
+  #compute test statistics
+  point_est <- compute_test_stat(no_obs_hw)
+  return(point_est)
+}
+```
+
+```{r}
+tic('overall start')
+for (exp_ind in 1:length(experiences)){
+  for (lane in lanes){
+    for (timegap in timegaps){
+      #gotta have at least 2 of WIN, TOP, LONG
+      #or KDA, TOP, any timegap
+      #or WIN, MID, any timegap
+      how_many = 0 
+      if(experiences[exp_ind] == 'hero_win'){
+        how_many = how_many + 1
+      }
+      if(lane == 'TOP'){
+        how_many = how_many + 1
+      }
+      if(timegap == timegaps[2]){
+        how_many = how_many + 1
+      }
+      if (experiences[exp_ind] == 'villain_higher_kda' & lane == 'TOP'){
+        how_many = 5
+      }
+      if (experiences[exp_ind] == 'hero_win' & lane == 'MIDDLE'){
+        how_many = 5
+      }
+      if (how_many < 2){
+        next
+      }
+      n_sample <- 300
+      print(paste('experience is', experiences[exp_ind]))
+      print(paste('lane is', lane))
+      print(paste('timegap is', timegap))
+      reality <- cutter(lane, exp_ind, timegap)
+      point_est <- compute_test_stat(reality)
+      saveRDS(point_est, paste('data/stats/real_',experiences[exp_ind],lane,timegap,'.Rds', sep='_'))
+      #compute helper df for RI
+      experiencerates <- reality %>%
+        group_by(skill, observed, time_slice) %>%
+        summarize(experience = sum(experience),
+                  tot = n())  %>%
+        ungroup() %>%
+        mutate(pct_experience = experience/tot)
+      
+      null_freqs <- reality %>% 
+        group_by(time_slice, observed, skill) %>%
+        summarize(count = n()) %>% 
+        ungroup() %>%
+        group_by(time_slice, skill) %>%
+        mutate(prop = count/sum(count)) %>%
+        ungroup()      
+
+      tic('loop start')
+      already_done <- Sys.glob('data/stats/*')
+      hypothetical <- paste('data/stats/full_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_')
+      if (!(hypothetical %in% already_done)){
+         res <- future_map(1:n_sample, full_null)
+      all_point_ests <- do.call('bind_rows', res)
+      saveRDS(all_point_ests, paste('data/stats/full_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_'))
+      }
+
+      hypothetical <- paste('data/stats/behaviordriven_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_')
+      if (!(hypothetical %in% already_done)){
+      res <- future_map(1:n_sample, behavior_driven)
+      all_point_ests <- do.call('bind_rows', res)
+      saveRDS(all_point_ests, paste('data/stats/behaviordriven_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_'))
+      }
+      
+      hypothetical <- paste('data/stats/changedriven_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_')
+      if (!(hypothetical %in% already_done)){
+      res <- future_map(1:n_sample, change_driven)
+      all_point_ests <- do.call('bind_rows', res)
+      saveRDS(all_point_ests, paste('data/stats/changedriven_null',experiences[exp_ind],lane,timegap,n_sample,'.Rds', sep='_'))
+      }
+      toc(log = TRUE)
+    }
+  }
+}
+```
+
+loop start: 190.492 sec elapsed
+loop start: 353.596 sec elapsed
+loop start: 156.299 sec elapsed
+loop start: 296.339 sec elapsed
+loop start: 179.751 sec elapsed
+loop start: 345.411 sec elapsed
+loop start: 160.908 sec elapsed
+loop start: 294.228 sec elapsed
+loop start: 188.632 sec elapsed
+loop start: 348.537 sec elapsed
+loop start: 173.645 sec elapsed
+loop start: 290.255 sec elapsed

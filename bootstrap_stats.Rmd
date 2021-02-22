@@ -1,0 +1,335 @@
+```{r}
+library(anytime)
+library(tidyverse)
+library(ggplot2)
+library(broom)
+library(tidyr)
+library(modelr)
+library(purrr)
+library(dplyr)
+library(lubridate)
+library(furrr)
+library(pracma)
+plan(multicore, workers = max(availableCores(constraints = "multicore")%/%2, 1))
+```
+
+```{r}
+n_sample <- 10000
+```
+
+
+```{r}
+big_reality <- readRDS('data/big_reality_stats.rds')
+```
+
+Compute test statistic
+```{r}
+test_stat <- function(df){
+reality.res <- df %>% 
+  mutate(c_ob = ifelse(choice == observed, 1, 0)) 
+reality.res <- reality.res %>%
+  group_by(player_id, c_ob) %>%
+  summarize(count = n()) %>%
+  spread(key=c_ob, value=count)
+  if (length(colnames(reality.res)) < 3){
+    if ('0' %in% colnames(reality.res)){
+      return(0)
+    }
+    return(1)
+  }
+  reality.res <- reality.res %>%
+  `colnames<-`(c("player_id", "ch_other", "ch_obs")) %>%
+  mutate(ch_other = ifelse(is.na(ch_other), 0, ch_other),
+         ch_obs = ifelse(is.na(ch_obs), 0, ch_obs)) %>%
+  mutate(prop_obs = ch_obs/(ch_obs + ch_other),
+         count = ch_obs + ch_other) %>%
+  select(player_id, prop_obs, count) %>%
+  ungroup()
+res <- reality.res  %>%
+  summarize(ch_obs_prop = mean(prop_obs)) %>%
+  pull(ch_obs_prop)
+return(res)
+}
+```
+Compute true values of test statistic
+```{r}
+reality <- big_reality %>% 
+  filter(hero_role == 'TOP', !is.na(hero_win)) 
+test_stats <- c(
+  test_stat(reality),
+  test_stat(reality %>% filter(skill == 'high')),
+  test_stat(reality %>% filter(skill == 'low')),
+  test_stat(reality %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(hero_win == 1)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(hero_win == 1)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(hero_win == 1)))
+point_est <- tibble(skill = c(NA, 'high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+       hero_win = c(NA, NA, NA, 0, 1, 0, 0, 1, 1),
+       test_stat = test_stats)
+point_est
+saveRDS(point_est, 'data/real_point_ests.Rds')
+```
+
+```{r}
+bootstrap_mp <- function(j){
+new_pids <- pids %>%
+  sample_frac(1, replace=T)
+new_reality <-
+  new_pids %>%
+  left_join(reality, by='player_id')
+test_stats <- c(
+  test_stat(new_reality %>% filter(skill == 'high')),
+  test_stat(new_reality %>% filter(skill == 'low')),
+  test_stat(new_reality %>% filter(hero_win == 0)),
+  test_stat(new_reality %>% filter(hero_win == 1)),
+  test_stat(new_reality %>% filter(skill == 'high') %>% filter(hero_win == 0)),
+  test_stat(new_reality %>% filter(skill == 'low') %>% filter(hero_win == 0)),
+  test_stat(new_reality %>% filter(skill == 'high') %>% filter(hero_win == 1)),
+  test_stat(new_reality %>% filter(skill == 'low') %>% filter(hero_win == 1)))
+point_est <- tibble(skill = c('high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+       hero_win = c(NA, NA, 0, 1, 0, 0, 1, 1),
+       test_stat = test_stats)
+return(point_est)
+}
+```
+
+```{r}
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_mp)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap.rds'
+saveRDS(all_point_ests, filename)
+toc()
+```
+Bootstrap for time
+```{r}
+reality <- big_reality %>% 
+  filter(hero_role == 'TOP', !is.na(hero_win) ) 
+```
+
+Compute true values of test statistic
+```{r}
+test_stats <- c(
+  test_stat(reality %>% filter(timegap < 3600 * 1000)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 1)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 1))
+)
+point_est <- tibble(hero_win = c(NA, NA, 0, 0, 1, 1),
+  timegap = c('short', 'long', 'short', 'long', 'short', 'long'),
+  test_stat = test_stats
+)                    
+saveRDS(point_est, 'data/real_timegap_point_ests.Rds')
+```
+
+```{r}
+bootstrap_tg <- function(j){
+new_pids <- pids %>%
+  sample_frac(1, replace=T)
+new_reality <-
+  new_pids %>%
+  left_join(reality, by='player_id')
+test_stats <- c(
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000)),
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 1)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 1))
+)
+point_est <- tibble(hero_win = c(NA, NA, 0, 0, 1, 1),
+  timegap = c('short', 'long', 'short', 'long', 'short', 'long'),
+  test_stat = test_stats
+)                    
+return(point_est)
+}
+```
+
+```{r}
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_tg)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap_timegap.rds'
+saveRDS(all_point_ests, filename)
+toc()
+```
+
+
+ROBUSTNESS CHECK
+for midlane, do the bootstrap
+```{r}
+reality <- big_reality %>% 
+  filter(hero_role == 'MIDDLE', !is.na(hero_win)) 
+test_stats <- c(
+  test_stat(reality),
+  test_stat(reality %>% filter(skill == 'high')),
+  test_stat(reality %>% filter(skill == 'low')),
+  test_stat(reality %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(hero_win == 1)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(hero_win == 0)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(hero_win == 1)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(hero_win == 1)))
+point_est <- tibble(skill = c(NA, 'high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+       hero_win = c(NA, NA, NA, 0, 1, 0, 0, 1, 1),
+       test_stat = test_stats)
+saveRDS(point_est, 'data/real_point_ests_mid.Rds')
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_mp)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap_mid.rds'
+saveRDS(all_point_ests, filename)
+all_point_ests
+toc()
+test_stats <- c(
+  test_stat(reality %>% filter(timegap < 3600 * 1000)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 0)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               hero_win == 1)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               hero_win == 1))
+)
+point_est <- tibble(hero_win = c(NA, NA, 0, 0, 1, 1),
+  timegap = c('short', 'long', 'short', 'long', 'short', 'long'),
+  test_stat = test_stats
+)                    
+point_est
+saveRDS(point_est, 'data/real_timegap_point_ests_mid.Rds')
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_tg)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap_timegap_mid.rds'
+saveRDS(all_point_ests, filename)
+toc()
+```
+
+for kda do the bootstrap
+```{r}
+bootstrap_mp_kda <- function(j){
+new_pids <- pids %>%
+  sample_frac(1, replace=T)
+new_reality <-
+  new_pids %>%
+  left_join(reality, by='player_id')
+test_stats <- c(
+  test_stat(reality),
+  test_stat(reality %>% filter(skill == 'high')),
+  test_stat(reality %>% filter(skill == 'low')),
+  test_stat(reality %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(villain_higher_kda == 1)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(villain_higher_kda == 1)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(villain_higher_kda == 1)))
+point_est <- tibble(skill = c(NA, 'high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+       villain_higher_kda = c(NA, NA, NA, 0, 1, 0, 0, 1, 1),
+       test_stat = test_stats)
+return(point_est)
+}
+
+bootstrap_tg_kda <- function(j){
+new_pids <- pids %>%
+  sample_frac(1, replace=T)
+new_reality <-
+  new_pids %>%
+  left_join(reality, by='player_id')
+test_stats <- c(
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000)),
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000,
+                               villain_higher_kda == 0)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000,
+                               villain_higher_kda == 0)),
+  test_stat(new_reality %>% filter(timegap < 3600 * 1000,
+                               villain_higher_kda == 1)),
+  test_stat(new_reality %>% filter(timegap > 3600 * 1000,
+                               villain_higher_kda == 1))
+)
+point_est <- tibble(villain_higher_kda = c(NA, NA, 0, 0, 1, 1),
+  timegap = c('short', 'long', 'short', 'long', 'short', 'long'),
+  test_stat = test_stats
+)                    
+return(point_est)
+}
+
+```
+
+```{r}
+reality <- big_reality %>% 
+  filter(hero_role == 'TOP', !is.na(villain_higher_kda)) 
+
+test_stats <- c(
+  test_stat(reality),
+  test_stat(reality %>% filter(skill == 'high')),
+  test_stat(reality %>% filter(skill == 'low')),
+  test_stat(reality %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(villain_higher_kda == 1)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(villain_higher_kda == 0)),
+  test_stat(reality %>% filter(skill == 'high') %>% filter(villain_higher_kda == 1)),
+  test_stat(reality %>% filter(skill == 'low') %>% filter(villain_higher_kda == 1)))
+point_est <- tibble(skill = c(NA, 'high', 'low', NA, NA, 'high', 'low', 'high', 'low'),
+       villain_higher_kda = c(NA, NA, NA, 0, 1, 0, 0, 1, 1),
+       test_stat = test_stats)
+saveRDS(point_est, 'data/real_point_ests_kda.Rds')
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_mp_kda)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap_kda.rds'
+saveRDS(all_point_ests, filename)
+all_point_ests
+toc()
+test_stats <- c(
+  test_stat(reality %>% filter(timegap < 3600 * 1000)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               villain_higher_kda == 0)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               villain_higher_kda == 0)),
+  test_stat(reality %>% filter(timegap < 3600 * 1000,
+                               villain_higher_kda == 1)),
+  test_stat(reality %>% filter(timegap > 3600 * 1000,
+                               villain_higher_kda == 1))
+)
+point_est <- tibble(hero_win = c(NA, NA, 0, 0, 1, 1),
+  timegap = c('short', 'long', 'short', 'long', 'short', 'long'),
+  test_stat = test_stats
+)                    
+point_est
+saveRDS(point_est, 'data/real_timegap_point_ests_kda.Rds')
+tic()
+pids <- reality %>%
+  distinct(player_id)
+res <- future_map(1:n_sample, bootstrap_tg_kda)
+all_point_ests <- do.call('bind_rows', res)
+filename <- 'data/tbt_bootstrap_timegap_kda.rds'
+saveRDS(all_point_ests, filename)
+all_point_ests
+toc()
+```

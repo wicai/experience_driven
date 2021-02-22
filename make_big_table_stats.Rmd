@@ -1,0 +1,148 @@
+```{r}
+library(anytime)
+library(tidyverse)
+library(ggplot2)
+library(broom)
+library(tidyr)
+library(modelr)
+library(purrr)
+library(dplyr)
+library(lubridate)
+library(furrr)
+library(pracma)
+library(xtable)
+plan(multicore, workers = max(availableCores(constraints = "multicore")%/%(3/2), 1))
+```
+
+```{r}
+history_files_plat <- Sys.glob('data/stats_summoner_champ_history_plat/*') 
+history_files_ch <- Sys.glob('data/stats_summoner_champ_history/*')
+hero_picked_first_df = list()
+all_longs = list()
+counter = 1
+for (h_file in history_files_plat){
+  h <- read_csv(h_file, col_types = cols()) 
+  if(dim(h)[[1]] == 0){
+    next
+  }
+  h <- h %>% rename(hero_role = hero_role) 
+  h <- h %>%
+    mutate(timestamp_next = lag(timestamp, order_by=-timestamp)) %>%    
+    arrange(-timestamp) %>%
+    group_by(hero_role) %>%
+    mutate(played_next_time = lag(hero, order_by=hero_role)) %>%
+    mutate(next_ban_1 = lag(ban_1, order_by=hero_role),
+           next_ban_2 = lag(ban_2, order_by=hero_role),
+           next_ban_3 = lag(ban_3, order_by=hero_role),
+           next_ban_4 = lag(ban_4, order_by=hero_role),
+           next_ban_5 = lag(ban_5, order_by=hero_role),
+           next_ban_6 = lag(ban_6, order_by=hero_role),
+           next_ban_7 = lag(ban_7, order_by=hero_role),
+           next_ban_8 = lag(ban_8, order_by=hero_role),
+           next_ban_9 = lag(ban_9, order_by=hero_role),
+           next_ban_10 = lag(ban_10, order_by=hero_role)) %>%
+    ungroup()
+  #add ban_1 thru ban_10 the next game that they had the same role
+  h<- h %>% group_by(hero_role)
+  hero_picked_first_df[[counter]] = h %>% group_by(hero_picked_first) %>% summarize(count = n())   
+  h <- h %>% ungroup() %>% filter(hero_picked_first == 1)  
+  if(dim(h)[[1]] == 0){
+    next
+  }
+  h$player_id <- counter
+  h$skill <- 'low'
+  all_longs[[counter]] = h
+  counter = counter + 1
+}
+for (h_file in history_files_ch){
+  h <- read_csv(h_file, col_types = cols()) 
+  if(dim(h)[[1]] == 0){
+    next
+  }
+  h <- h %>% rename(hero_role = hero_role)
+  h <- h %>%  
+    mutate(timestamp_next = lag(timestamp, order_by=-timestamp)) %>%
+    arrange(-timestamp) %>%
+    group_by(hero_role) %>%
+    mutate(played_next_time = lag(hero, order_by=hero_role)) %>%
+    mutate(next_ban_1 = lag(ban_1, order_by=hero_role),
+           next_ban_2 = lag(ban_2, order_by=hero_role),
+           next_ban_3 = lag(ban_3, order_by=hero_role),
+           next_ban_4 = lag(ban_4, order_by=hero_role),
+           next_ban_5 = lag(ban_5, order_by=hero_role),
+           next_ban_6 = lag(ban_6, order_by=hero_role),
+           next_ban_7 = lag(ban_7, order_by=hero_role),
+           next_ban_8 = lag(ban_8, order_by=hero_role),
+           next_ban_9 = lag(ban_9, order_by=hero_role),
+           next_ban_10 = lag(ban_10, order_by=hero_role)) %>%
+    ungroup()
+  #add ban_1 thru ban_10 the next game that they had the same role
+  h<- h %>% group_by(hero_role)
+  hero_picked_first_df[[counter]] = h %>% group_by(hero_picked_first) %>% summarize(count = n())   
+  h <- h %>% ungroup() %>% filter(hero_picked_first == 1)  
+  if(dim(h)[[1]] == 0){
+    next
+  }
+  h$skill <- 'high'
+  h$player_id <- counter
+  all_longs[[counter]] = h
+  counter = counter + 1
+}
+big_table <- do.call('rbind', all_longs)
+```
+
+```{r}
+big_table <- big_table %>%
+  mutate(foo = milliseconds(timestamp)) %>%
+  mutate(date = foo + origin) %>% 
+  arrange(date) %>%
+  mutate(month = month(date)) %>%
+  filter(month == 9)  %>%
+  select(-foo, -month) %>%
+  mutate(hour = (hour(date) - 8) %% 24)  
+big_table <- big_table %>%
+  mutate(timegap = timestamp_next - timestamp,
+         total_villain_damage = villain_0_magicDamageDealtToChampions + villain_0_physicalDamageDealtToChampions,
+         total_hero_damage = hero_magicDamageDealtToChampions + hero_physicalDamageDealtToChampions,
+         villain_kda = ifelse(villain_0_deaths !=0, (villain_0_kills + villain_0_assists)/villain_0_deaths, ifelse(villain_0_assists > 0 | villain_0_kills > 0, 999, 1)),
+         hero_kda = ifelse(hero_deaths !=0, (hero_kills + hero_assists)/hero_deaths, ifelse(hero_assists > 0 | hero_kills > 0, 999, 1)),
+         villain_higher_kda = ifelse(villain_kda > hero_kda, 0, 1),
+         villain_first_blood = ifelse(villain_0_firstBloodKill, 1, 0)
+  ) %>%
+  filter(!is.na(played_next_time)) %>%
+  mutate(id = row_number()) %>%
+  select(-hero_picked_first)
+```
+
+```{r}
+n_time_slice <- 4
+foo <- big_table$timestamp %>% cut_interval(n_time_slice)
+big_table$time_slice <- as.character(as.numeric(foo))
+big_table %>% group_by(time_slice) %>% summarize(n())
+n_hour_slice <- 4
+bar <- big_table$hour %>% cut_interval(n_hour_slice)
+big_table$hour_slice <- as.character(as.numeric(bar))
+big_table %>% group_by(hour_slice) %>% summarize(n())
+```
+
+```{r}
+#make the base table
+all_champs <- big_table %>% ungroup() %>% select(hero) %>% unique()
+all_champs$other_champ <- all_champs$hero
+roles <- big_table %>% ungroup() %>% select(hero_role) %>% distinct()
+df <- all_champs %>% tidyr::expand(hero, other_champ) %>% crossing(roles)
+```
+
+```{r}
+big_reality <- big_table %>% 
+  filter(hero_role == 'TOP' | hero_role == 'MIDDLE') %>%
+  filter(is.na(villain_1)) %>%
+  select(villain_0, hero, hero_role, hero_win, played_next_time, time_slice, contains('ban_'), player_id, skill, hero_win, timegap, villain_first_blood,
+         villain_higher_kda) %>%
+  filter(!is.na(villain_0)) %>% 
+  select(player_id, champ=hero, observed = villain_0, choice = played_next_time, time_slice, matches('^ban_[0-9]+'), skill, hero_win, everything())
+```
+
+```{r}
+saveRDS(big_reality, 'data/big_reality_stats.rds')
+```
